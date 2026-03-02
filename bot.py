@@ -3,7 +3,6 @@ import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.enums import ParseMode
 
 # ================== ENV ==================
 
@@ -62,16 +61,16 @@ def format_caption(template: str, data: dict):
 @app.on_message(filters.command("start"))
 async def start(client, message):
     await message.reply_text(
-        "🔥 Markdown Caption Bot Ready!\n\n"
+        "🔥 PyroFork HTML Caption Bot Ready!\n\n"
         "Use:\n"
         "/setcaption YourTemplate\n\n"
+        "Supports HTML + <blockquote>\n\n"
         "Placeholders:\n"
         "{anime_name}\n"
         "{season}\n"
         "{episode}\n"
         "{audio}\n"
-        "{quality}\n\n"
-        "Quote ke liye '>' use karo."
+        "{quality}"
     )
 
 @app.on_message(filters.command("setcaption"))
@@ -116,7 +115,7 @@ async def process_queue(user_id):
             await message.reply_video(
                 video=message.video.file_id,
                 caption=new_caption,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode="html"   # ✅ PyroFork supports this directly
             )
         except Exception as e:
             print("Send Error:", e)
@@ -129,5 +128,5 @@ async def process_queue(user_id):
 
     user_processing[user_id] = False
 
-print("🔥 Bot Running Successfully (Markdown Mode)")
+print("🔥 Bot Running Successfully (PyroFork HTML Mode)")
 app.run()
