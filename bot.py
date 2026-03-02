@@ -3,6 +3,7 @@ import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.enums import ParseMode
 
 # ================== ENV VARIABLES ==================
 
@@ -63,9 +64,9 @@ async def start(client, message):
     await message.reply_text(
         "💀 Caption Rename Bot Ready!\n\n"
         "Send multiple videos and I will resend in same order.\n\n"
-        "Use:\n"
+        "Commands:\n"
         "/setcaption YourTemplate\n"
-        "/help for placeholders"
+        "/help"
     )
 
 @app.on_message(filters.command("help"))
@@ -78,7 +79,7 @@ async def help_cmd(client, message):
         "{audio}\n"
         "{quality}\n\n"
         "Example:\n"
-        "/setcaption Anime: {anime_name} | Ep: {episode}"
+        "/setcaption <b>{anime_name}</b> - Ep {episode}"
     )
 
 @app.on_message(filters.command("setcaption"))
@@ -88,7 +89,7 @@ async def set_caption(client, message):
 
     template = message.text.split(" ", 1)[1]
     user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Custom caption saved successfully!")
+    await message.reply_text("✅ Custom caption saved!")
 
 # ================== VIDEO HANDLER ==================
 
@@ -125,17 +126,18 @@ async def process_queue(user_id):
 
         try:
             await message.reply_video(
-    video=message.video.file_id,
-    caption=new_caption,
-    parse_mode="html"
+                video=message.video.file_id,
+                caption=new_caption,
+                parse_mode=ParseMode.HTML
             )
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error sending video: {e}")
 
-        await asyncio.sleep(0.2)  # Speed control (anti flood)
+        await asyncio.sleep(0.2)  # Anti-flood protection
 
     user_processing[user_id] = False
 
 # ================== RUN BOT ==================
 
+print("🔥 Bot Started Successfully")
 app.run()
