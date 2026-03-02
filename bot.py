@@ -3,6 +3,7 @@ import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.enums import ParseMode
 
 # ================== ENV ==================
 
@@ -14,8 +15,7 @@ app = Client(
     "CaptionRenameBot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    parse_mode="HTML"  # HTML support enabled
+    bot_token=BOT_TOKEN
 )
 
 # ================== MEMORY ==================
@@ -64,35 +64,16 @@ def format_caption(template: str, data: dict):
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text(
-        "🔥 Caption Rename Bot (Pyrofork)\n\n"
-        "Send videos and I will resend them in same order.\n\n"
-        "Use:\n"
-        "/setcaption YourTemplate\n"
-        "/help to see placeholders"
-    )
-
-@app.on_message(filters.command("help"))
-async def help_cmd(client, message):
-    await message.reply_text(
-        "🛠 Available Placeholders:\n\n"
-        "{anime_name}\n"
-        "{season}\n"
-        "{episode}\n"
-        "{audio}\n"
-        "{quality}\n\n"
-        "Example:\n"
-        "/setcaption <blockquote>{anime_name}</blockquote>"
-    )
+    await message.reply_text("🔥 Pyrofork Caption Bot Ready!")
 
 @app.on_message(filters.command("setcaption"))
 async def set_caption(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage:\n/setcaption Your Caption Template")
+        return await message.reply_text("Usage:\n/setcaption Your Template")
 
     template = message.text.split(" ", 1)[1]
     user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Custom caption saved successfully!")
+    await message.reply_text("✅ Caption Template Saved!")
 
 # ================== VIDEO HANDLER ==================
 
@@ -124,12 +105,12 @@ async def process_queue(user_id):
         new_caption = format_caption(template, data) if template else original_caption
 
         try:
-            # SAFEST METHOD (no parse error)
             await app.copy_message(
                 chat_id=message.chat.id,
                 from_chat_id=message.chat.id,
                 message_id=message.id,
-                caption=new_caption
+                caption=new_caption,
+                parse_mode=ParseMode.HTML  # ✅ Correct way in Pyrofork
             )
         except Exception as e:
             print("Copy Error:", e)
