@@ -14,7 +14,8 @@ app = Client(
     "CaptionRenameBot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    parse_mode="HTML"  # HTML support enabled
 )
 
 # ================== MEMORY ==================
@@ -63,16 +64,35 @@ def format_caption(template: str, data: dict):
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text("🔥 Caption Rename Bot Ready!")
+    await message.reply_text(
+        "🔥 Caption Rename Bot (Pyrofork)\n\n"
+        "Send videos and I will resend them in same order.\n\n"
+        "Use:\n"
+        "/setcaption YourTemplate\n"
+        "/help to see placeholders"
+    )
+
+@app.on_message(filters.command("help"))
+async def help_cmd(client, message):
+    await message.reply_text(
+        "🛠 Available Placeholders:\n\n"
+        "{anime_name}\n"
+        "{season}\n"
+        "{episode}\n"
+        "{audio}\n"
+        "{quality}\n\n"
+        "Example:\n"
+        "/setcaption <blockquote>{anime_name}</blockquote>"
+    )
 
 @app.on_message(filters.command("setcaption"))
 async def set_caption(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage:\n/setcaption Your Template")
+        return await message.reply_text("Usage:\n/setcaption Your Caption Template")
 
     template = message.text.split(" ", 1)[1]
     user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Caption Template Saved!")
+    await message.reply_text("✅ Custom caption saved successfully!")
 
 # ================== VIDEO HANDLER ==================
 
@@ -104,17 +124,19 @@ async def process_queue(user_id):
         new_caption = format_caption(template, data) if template else original_caption
 
         try:
-            await message.copy(
+            # SAFEST METHOD (no parse error)
+            await app.copy_message(
                 chat_id=message.chat.id,
-                caption=new_caption,
-                parse_mode="html"
+                from_chat_id=message.chat.id,
+                message_id=message.id,
+                caption=new_caption
             )
         except Exception as e:
             print("Copy Error:", e)
 
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.4)
 
     user_processing[user_id] = False
 
-print("🔥 Bot Running Successfully")
+print("🔥 Pyrofork Bot Running Successfully")
 app.run()
