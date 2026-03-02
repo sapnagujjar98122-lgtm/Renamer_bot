@@ -1,4 +1,3 @@
-import re
 import os
 import asyncio
 from pyrogram import Client, filters
@@ -25,8 +24,7 @@ user_processing = {}
 
 # ================== DATA EXTRACT ==================
 
-def extract_data(text: str):
-def extract_data(text: str):
+def extract_data(text):
     data = {
         "anime_name": "Unknown",
         "season": "Unknown",
@@ -35,31 +33,35 @@ def extract_data(text: str):
         "quality": "Unknown"
     }
 
+    if not text:
+        return data
+
     lines = text.split("\n")
 
     for line in lines:
         line_clean = line.strip()
+        upper_line = line_clean.upper()
 
-        if "ANIME" in line_clean.upper():
-            data["anime_name"] = line_clean.split(":",1)[1].strip() if ":" in line_clean else "Unknown"
+        if "ANIME" in upper_line and ":" in line_clean:
+            data["anime_name"] = line_clean.split(":", 1)[1].strip()
 
-        elif "SEASON" in line_clean.upper():
-            data["season"] = line_clean.split(":",1)[1].strip()
+        elif "SEASON" in upper_line and ":" in line_clean:
+            data["season"] = line_clean.split(":", 1)[1].strip()
 
-        elif "EPISODE" in line_clean.upper():
-            data["episode"] = line_clean.split(":",1)[1].strip()
+        elif "EPISODE" in upper_line and ":" in line_clean:
+            data["episode"] = line_clean.split(":", 1)[1].strip()
 
-        elif "QUALITY" in line_clean.upper():
-            data["quality"] = line_clean.split(":",1)[1].strip()
+        elif "QUALITY" in upper_line and ":" in line_clean:
+            data["quality"] = line_clean.split(":", 1)[1].strip()
 
-        elif "AUDIO" in line_clean.upper():
-            data["audio"] = line_clean.split(":",1)[1].strip()
+        elif "AUDIO" in upper_line and ":" in line_clean:
+            data["audio"] = line_clean.split(":", 1)[1].strip()
 
     return data
 
 # ================== FORMAT ==================
 
-def format_caption(template: str, data: dict):
+def format_caption(template, data):
     for key, value in data.items():
         template = template.replace(f"{{{key}}}", value)
     return template
@@ -123,7 +125,7 @@ async def process_queue(user_id):
             await message.reply_video(
                 video=message.video.file_id,
                 caption=new_caption,
-                parse_mode="html"   # ✅ PyroFork supports this directly
+                parse_mode="html"
             )
         except Exception as e:
             print("Send Error:", e)
@@ -132,9 +134,9 @@ async def process_queue(user_id):
                 caption=new_caption
             )
 
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.3)
 
     user_processing[user_id] = False
 
-print("🔥 Bot Running Successfully (PyroFork HTML Mode)")
+print("🔥 Bot Running Successfully")
 app.run()
