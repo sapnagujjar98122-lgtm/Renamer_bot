@@ -125,8 +125,9 @@ async def process_queue(user_id):
 
         try:
             await message.reply_video(
-                video=message.video.file_id,
-                caption=new_caption
+    video=message.video.file_id,
+    caption=new_caption,
+    parse_mode="html"
             )
         except Exception as e:
             print(f"Error: {e}")
