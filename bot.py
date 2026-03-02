@@ -36,11 +36,11 @@ def extract_data(text: str):
     }
 
     patterns = {
-        "anime_name": r"ANIME[:\s]*(.*)",
-        "season": r"Season[:\s]*(\d+)",
-        "episode": r"Episode[:\s]*(\d+)",
-        "quality": r"Quality[:\s]*([0-9p •]+)",
-        "audio": r"Audio[:\s]*(.*)"
+        "anime_name": r"ANIME\s*[:•]\s*(.+)",
+        "season": r"Season\s*[:•]\s*(\d+)",
+        "episode": r"Episode\s*[:•]\s*(\d+)",
+        "quality": r"Quality\s*[:•]\s*([0-9p •]+)",
+        "audio": r"Audio\s*[:•]\s*(.+)"
     }
 
     for key, pattern in patterns.items():
@@ -62,7 +62,7 @@ def format_caption(template: str, data: dict):
 @app.on_message(filters.command("start"))
 async def start(client, message):
     await message.reply_text(
-        "💀 Caption Rename Bot Ready!\n\n"
+        "🔥 Markdown Caption Bot Ready!\n\n"
         "Use:\n"
         "/setcaption YourTemplate\n\n"
         "Placeholders:\n"
@@ -70,17 +70,18 @@ async def start(client, message):
         "{season}\n"
         "{episode}\n"
         "{audio}\n"
-        "{quality}"
+        "{quality}\n\n"
+        "Quote ke liye '>' use karo."
     )
 
 @app.on_message(filters.command("setcaption"))
 async def set_caption(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage:\n/setcaption Your Caption Template")
+        return await message.reply_text("Usage:\n/setcaption Your Caption")
 
     template = message.text.split(" ", 1)[1]
     user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Custom caption saved successfully!")
+    await message.reply_text("✅ Custom caption saved!")
 
 # ================== VIDEO HANDLER ==================
 
@@ -97,7 +98,7 @@ async def video_handler(client, message: Message):
     if not user_processing[user_id]:
         asyncio.create_task(process_queue(user_id))
 
-# ================== QUEUE ==================
+# ================== QUEUE SYSTEM ==================
 
 async def process_queue(user_id):
     user_processing[user_id] = True
@@ -112,16 +113,13 @@ async def process_queue(user_id):
         new_caption = format_caption(template, data) if template else original_caption
 
         try:
-            # First try HTML
             await message.reply_video(
                 video=message.video.file_id,
                 caption=new_caption,
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.MARKDOWN
             )
         except Exception as e:
-            print("HTML Error, sending without parse:", e)
-
-            # Fallback plain text (never crash)
+            print("Send Error:", e)
             await message.reply_video(
                 video=message.video.file_id,
                 caption=new_caption
@@ -131,5 +129,5 @@ async def process_queue(user_id):
 
     user_processing[user_id] = False
 
-print("🔥 Bot Running Successfully")
+print("🔥 Bot Running Successfully (Markdown Mode)")
 app.run()
