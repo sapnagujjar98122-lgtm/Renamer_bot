@@ -23,6 +23,7 @@ app = Client(
 user_templates = {}
 user_media_buffer = {}
 user_delay_task = {}
+user_edit_all_mode = {}
 
 # ================== DATA EXTRACT ==================
 
@@ -38,34 +39,29 @@ def extract_data(text: str):
     if not text:
         return data
 
-    # Anime Name
     name = re.search(r"[Aaᴀ][Nnɴ][Iiɪ][Mmᴍ][Eeᴇ]\s*:\s*(.+)", text)
     if name:
         data["anime_name"] = name.group(1).strip()
 
-    # Season
     season = re.search(r"[Ss]eason\s*:?\.?\s*(\d+)", text)
     if season:
         data["season"] = season.group(1)
 
-    # Episode
     ep = re.search(r"[Ee]pisode\s*:?\.?\s*(\d+)", text)
     if ep:
         data["episode"] = int(ep.group(1))
 
-    # Quality
     ql = re.search(r"(\d{3,4})p", text)
     if ql:
         data["quality"] = int(ql.group(1))
 
-    # Audio
     audio = re.search(r"[Aa]udio\s*:\s*(.+)", text)
     if audio:
         data["audio"] = audio.group(1).strip()
 
     return data
 
-# ================== FORMAT CAPTION ==================
+# ================== FORMAT ==================
 
 def format_caption(template: str, data: dict):
     for key, value in data.items():
@@ -83,40 +79,52 @@ def quality_order(q):
 @app.on_message(filters.command("start"))
 async def start(client, message):
     await message.reply_text(
-        "🔥 Ultimate Caption Rename Bot Ready!\n\n"
-        "Send multiple videos.\n"
-        "Bot will wait 2 seconds and resend in correct episode & quality order.\n\n"
-        "Use /setcaption to set custom caption\n"
-        "Use /help for placeholders"
+        "🔥 Advanced Caption Bot Ready!\n\n"
+        "Use:\n"
+        "/setcaption template\n"
+        "/edit_all yes or no\n"
+        "/help"
     )
 
 @app.on_message(filters.command("help"))
 async def help_cmd(client, message):
     await message.reply_text(
-        "🛠 Available Placeholders:\n\n"
+        "🛠 Placeholders:\n\n"
         "{anime_name}\n"
         "{season}\n"
         "{episode}\n"
         "{audio}\n"
         "{quality}\n\n"
-        "Example:\n"
-        "/setcaption <blockquote>{anime_name}</blockquote>\n"
-        "Ep {episode} - {quality}p"
+        "/edit_all yes → resend text + stickers also\n"
+        "/edit_all no → only videos renamed"
     )
 
 @app.on_message(filters.command("setcaption"))
 async def set_caption(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage:\n/setcaption Your Caption Template")
+        return await message.reply_text("Usage:\n/setcaption Your Template")
 
     template = message.text.split(" ", 1)[1]
     user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Caption Template Saved Successfully!")
+    await message.reply_text("✅ Caption Template Saved!")
 
-# ================== VIDEO HANDLER ==================
+@app.on_message(filters.command("edit_all"))
+async def edit_all_cmd(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("Usage:\n/edit_all yes or no")
 
-@app.on_message(filters.video)
-async def video_handler(client, message: Message):
+    choice = message.command[1].lower()
+
+    if choice not in ["yes", "no"]:
+        return await message.reply_text("Only use: yes or no")
+
+    user_edit_all_mode[message.from_user.id] = choice
+    await message.reply_text(f"✅ edit_all mode set to: {choice}")
+
+# ================== MESSAGE COLLECTOR ==================
+
+@app.on_message(filters.all & ~filters.command(["start", "help", "setcaption", "edit_all"]))
+async def collect_messages(client, message: Message):
     user_id = message.from_user.id
 
     if user_id not in user_media_buffer:
@@ -124,7 +132,6 @@ async def video_handler(client, message: Message):
 
     user_media_buffer[user_id].append(message)
 
-    # Cancel previous delay if running
     if user_id in user_delay_task:
         user_delay_task[user_id].cancel()
 
@@ -139,35 +146,50 @@ async def process_after_delay(user_id):
     if not messages:
         return
 
+    edit_all = user_edit_all_mode.get(user_id, "no")
+
     media_list = []
 
     for msg in messages:
-        data = extract_data(msg.caption or "")
-        media_list.append((data["episode"], quality_order(data["quality"]), msg))
+        if msg.video:
+            data = extract_data(msg.caption or "")
+            media_list.append((data["episode"], quality_order(data["quality"]), msg))
+        elif edit_all == "yes":
+            media_list.append((9999, 9999, msg))  # text/sticker at end
 
-    # Sort by episode then quality order
     media_list.sort(key=lambda x: (x[0], x[1]))
 
     for _, _, msg in media_list:
-        original_caption = msg.caption or ""
-        template = user_templates.get(user_id)
-
-        data = extract_data(original_caption)
-        new_caption = format_caption(template, data) if template else original_caption
 
         try:
-            await app.copy_message(
-                chat_id=msg.chat.id,
-                from_chat_id=msg.chat.id,
-                message_id=msg.id,
-                caption=new_caption,
-                parse_mode=ParseMode.HTML
-            )
+            if msg.video:
+                original_caption = msg.caption or ""
+                template = user_templates.get(user_id)
+                data = extract_data(original_caption)
+                new_caption = format_caption(template, data) if template else original_caption
+
+                await app.copy_message(
+                    chat_id=msg.chat.id,
+                    from_chat_id=msg.chat.id,
+                    message_id=msg.id,
+                    caption=new_caption,
+                    parse_mode=ParseMode.HTML
+                )
+
+            else:
+                if edit_all == "yes":
+                    await app.copy_message(
+                        chat_id=msg.chat.id,
+                        from_chat_id=msg.chat.id,
+                        message_id=msg.id
+                    )
+
             await asyncio.sleep(0.4)
+
         except Exception as e:
             print("Copy Error:", e)
 
     user_media_buffer[user_id] = []
 
-print("🔥 Ultimate Advanced Bot Running Successfully")
+print("🔥 Ultimate Bot With edit_all Running")
 app.run()
