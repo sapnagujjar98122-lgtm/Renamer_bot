@@ -24,7 +24,7 @@ user_processing = {}
 
 # ================== DATA EXTRACT ==================
 
-def extract_data(text):
+def extract_data(text: str):
     data = {
         "anime_name": "Unknown",
         "season": "Unknown",
@@ -36,26 +36,18 @@ def extract_data(text):
     if not text:
         return data
 
-    lines = text.split("\n")
+    patterns = {
+        "anime_name": r"[Aaᴀ][Nnɴ][Iiɪ][Mmᴍ][Eeᴇ]\s*:\s*(.+)",
+        "season": r"[Ss]eason\s*:\s*(\d+)",
+        "episode": r"[Ee]pisode\s*:\s*(\d+)",
+        "quality": r"[Qq]uality\s*:\s*([\dPp]+)",
+        "audio": r"[Aa]udio\s*:\s*(.+)"
+    }
 
-    for line in lines:
-        line_clean = line.strip()
-        upper_line = line_clean.upper()
-
-        if "ANIME" in upper_line and ":" in line_clean:
-            data["anime_name"] = line_clean.split(":", 1)[1].strip()
-
-        elif "SEASON" in upper_line and ":" in line_clean:
-            data["season"] = line_clean.split(":", 1)[1].strip()
-
-        elif "EPISODE" in upper_line and ":" in line_clean:
-            data["episode"] = line_clean.split(":", 1)[1].strip()
-
-        elif "QUALITY" in upper_line and ":" in line_clean:
-            data["quality"] = line_clean.split(":", 1)[1].strip()
-
-        elif "AUDIO" in upper_line and ":" in line_clean:
-            data["audio"] = line_clean.split(":", 1)[1].strip()
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text)
+        if match:
+            data[key] = match.group(1).strip()
 
     return data
 
