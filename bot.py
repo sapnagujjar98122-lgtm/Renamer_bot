@@ -1,3 +1,4 @@
+import re
 import os
 import asyncio
 from pyrogram import Client, filters
@@ -16,7 +17,7 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# ================== STORAGE ==================
+# ================== MEMORY ==================
 
 user_templates = {}
 user_queues = {}
@@ -53,7 +54,7 @@ def extract_data(text: str):
 
 # ================== FORMAT ==================
 
-def format_caption(template, data):
+def format_caption(template: str, data: dict):
     for key, value in data.items():
         template = template.replace(f"{{{key}}}", value)
     return template
@@ -62,27 +63,16 @@ def format_caption(template, data):
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text(
-        "🔥 PyroFork HTML Caption Bot Ready!\n\n"
-        "Use:\n"
-        "/setcaption YourTemplate\n\n"
-        "Supports HTML + <blockquote>\n\n"
-        "Placeholders:\n"
-        "{anime_name}\n"
-        "{season}\n"
-        "{episode}\n"
-        "{audio}\n"
-        "{quality}"
-    )
+    await message.reply_text("🔥 Caption Rename Bot Ready!")
 
 @app.on_message(filters.command("setcaption"))
 async def set_caption(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage:\n/setcaption Your Caption")
+        return await message.reply_text("Usage:\n/setcaption Your Template")
 
     template = message.text.split(" ", 1)[1]
     user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Custom caption saved!")
+    await message.reply_text("✅ Caption Template Saved!")
 
 # ================== VIDEO HANDLER ==================
 
@@ -99,7 +89,7 @@ async def video_handler(client, message: Message):
     if not user_processing[user_id]:
         asyncio.create_task(process_queue(user_id))
 
-# ================== QUEUE SYSTEM ==================
+# ================== QUEUE PROCESS ==================
 
 async def process_queue(user_id):
     user_processing[user_id] = True
@@ -114,17 +104,13 @@ async def process_queue(user_id):
         new_caption = format_caption(template, data) if template else original_caption
 
         try:
-            await message.reply_video(
-                video=message.video.file_id,
+            await message.copy(
+                chat_id=message.chat.id,
                 caption=new_caption,
                 parse_mode="html"
             )
         except Exception as e:
-            print("Send Error:", e)
-            await message.reply_video(
-                video=message.video.file_id,
-                caption=new_caption
-            )
+            print("Copy Error:", e)
 
         await asyncio.sleep(0.3)
 
