@@ -1,9 +1,9 @@
-import os
 import re
+import os
 import asyncio
-from pyrofork import Client, filters
-from pyrofork.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrofork.enums import ParseMode
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pyrogram.enums import ParseMode
 
 # ================= ENV =================
 
@@ -68,7 +68,7 @@ def extract_data(text):
     return data
 
 def quality_order(q):
-    order = [480, 720, 1080, 2160]
+    order = [480p, 720p, 1080p, 2160p]
     return order.index(q) if q in order else 999
 
 def format_caption(template, data):
@@ -86,7 +86,7 @@ async def start(_, msg):
 
 @app.on_message(filters.command("add_channels"))
 async def add_channels(_, msg):
-    await msg.reply("📩 Resend any message from your channel with sender name")
+    await msg.reply("📥Send any massage from your channel to add channel")
 
 @app.on_message(filters.forwarded)
 async def save_channel(client, msg):
@@ -119,7 +119,7 @@ async def save_channel(client, msg):
 @app.on_message(filters.command("huge_upload"))
 async def huge_upload_start(_, msg):
     huge_sessions[msg.from_user.id] = {"step": 1}
-    await msg.reply("📩 Resend FIRST message from source channel")
+    await msg.reply("📥Send first massage from chat")
 
 # ================= HUGE STEPS =================
 
@@ -141,7 +141,7 @@ async def huge_steps(client, msg):
         session["first_id"] = msg.forward_from_message_id
         session["source_chat"] = source_chat.id
         session["step"] = 2
-        return await msg.reply("📩 Resend LAST message from source channel")
+        return await msg.reply("📥Send last massage from chat")
 
     if session["step"] == 2:
         session["last_id"] = msg.forward_from_message_id
@@ -149,7 +149,7 @@ async def huge_steps(client, msg):
 
         channels = registered_channels.get(user_id, [])
         if not channels:
-            return await msg.reply("❌ No registered channels. Use /add_channels")
+            return await msg.reply("❌ No registered channels found. Use /add_channels to add channels")
 
         buttons = []
         for ch in channels:
@@ -157,7 +157,7 @@ async def huge_steps(client, msg):
             buttons.append([InlineKeyboardButton(chat.title, callback_data=f"upload_{ch}")])
 
         await msg.reply(
-            "📢 Choose target channel",
+            "📤Choose target channel",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
