@@ -63,6 +63,7 @@ DEFAULT_CAPTION = """<b> 📺 ᴀɴɪᴍᴇ : {anime_name}
 # ----------------------- Utilities (provided functions) -----------------------
 
 def extract_data(text: str):
+def extract_data(text: str):
     data = {
         "anime_name": "Unknown",
         "season": "Unknown",
@@ -74,28 +75,67 @@ def extract_data(text: str):
     if not text:
         return data
 
-    name = re.search(r"[Aaᴀ][Nnɴ][Iiɪ][Mmᴍ][Eeᴇ]\s*:\s*(.+)", text)
-    if name:
-        data["anime_name"] = name.group(1).strip()
+    # 1️⃣ Anime Name
+    name_patterns = [
+        r"ᴀɴɪᴍᴇ\s*[:\-]\s*(.+)",       # ᴀɴɪᴍᴇ: One Punch Man
+        r"^(.*?)\n",                     # first line as anime name
+        r"Title['‘’]?\s*[-:]?\s*(.*?)\s*(?:\[|$)"  # Title'- Fairy tail [S07]
+    ]
+    for pat in name_patterns:
+        match = re.search(pat, text, re.MULTILINE)
+        if match:
+            data["anime_name"] = match.group(1).strip()
+            break
 
-    season = re.search(r"[Ss]eason\s*:?\.?\s*(\d+)", text)
-    if season:
-        data["season"] = season.group(1)
+    # 2️⃣ Season
+    season_patterns = [
+        r"Season\s*[:\-]?\s*(\d+)",      # Season: 03 / Season - 03
+        r"\[S(\d+)\]"                     # [S07]
+    ]
+    for pat in season_patterns:
+        match = re.search(pat, text, re.IGNORECASE)
+        if match:
+            data["season"] = match.group(1).strip()
+            break
 
-    ep = re.search(r"[Ee]pisode\s*:?\.?\s*(\d+)", text)
-    if ep:
-        data["episode"] = int(ep.group(1))
+    # 3️⃣ Episode
+    episode_patterns = [
+        r"Episode\s*[:\-]?\s*(\d+)",     # Episode: 10 / Episode - 12
+        r"✻\s*Eᴘɪsᴏᴅᴇ\s*[:\-]?\s*(\d+)", # ✻ Episode : 10
+        r"•\s*Episode\s*[:\-]?\s*(\d+)"
+    ]
+    for pat in episode_patterns:
+        match = re.search(pat, text, re.IGNORECASE)
+        if match:
+            data["episode"] = int(match.group(1).strip())
+            break
 
-    ql = re.search(r"(\d{3,4})p", text)
-    if ql:
-        try:
-            data["quality"] = int(ql.group(1))
-        except:
-            data["quality"] = 0
+    # 4️⃣ Audio
+    audio_patterns = [
+        r"Audio\s*[:\-]?\s*(.+)",        # Audio: Hindi
+        r"Audio track\s*[:\-]?\s*(.+)",  # Audio track: Hindi
+        r"Language\s*[:\-]?\s*(.+)",     # 🎧 Language - Hindi
+        r"ᴀᴜᴅɪᴏ\s*[:\-]?\s*(.+)"        # ✾ ᴀᴜᴅɪᴏ : ʜɪɴᴅɪ
+    ]
+    for pat in audio_patterns:
+        match = re.search(pat, text, re.IGNORECASE)
+        if match:
+            data["audio"] = match.group(1).strip()
+            break
 
-    audio = re.search(r"[Aa]udio\s*:\s*(.+)", text)
-    if audio:
-        data["audio"] = audio.group(1).strip()
+    # 5️⃣ Quality
+    quality_patterns = [
+        r"(\d{3,4})p",                   # 480p / 720p / 1080p / 2160p
+        r"(\d{3,4})p\s*\[ ?4K ?\]"       # 2160p [ 4K ]
+    ]
+    for pat in quality_patterns:
+        match = re.search(pat, text, re.IGNORECASE)
+        if match:
+            try:
+                data["quality"] = int(match.group(1).strip())
+                break
+            except:
+                continue
 
     return data
 
