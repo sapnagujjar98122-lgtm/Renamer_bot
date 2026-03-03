@@ -1,19 +1,17 @@
-# KENSHIN Caption Changer 2.02 (Pyrogram) — full extended working code
-# Features:
-# - /start, /help, /setcaption, /edit_all, /set_sticker, /add_channels, /list_channels
-# - /huge_upload (forward FIRST & LAST messages; choose target channel via inline buttons)
-# - Queue-based video rename with 0.2s delay, episode/quality sorting
-# - Per-user episode stickers, log-group copy, admin commands /users & /broadcast
-# - Uses the exact extract_data/format_caption/quality_order/is_admin helpers you provided
+# KENSHIN Caption Changer 2.02 — Full Extended (Pyrogram)
+# Requirements: pyrogram, tgcrypto, python-dotenv (optional)
+# Environment variables required:
+# API_ID, API_HASH, BOT_TOKEN, LOG_GROUP_ID, ADMIN_IDS  (ADMIN_IDS comma-separated numeric IDs)
+#
 # Notes:
-# - Set environment variables: API_ID, API_HASH, BOT_TOKEN, LOG_GROUP_ID, ADMIN_IDS (comma separated)
-# - Bot must be admin in channels you register and in target channels
-# - This script keeps registrations in memory (restart clears them). Persist if needed.
+# - This file is self-contained and uses in-memory storage (restart will clear registrations).
+# - Make sure the bot is admin in channels you register and in target channels.
+# - Use Python 3.11 / Pyrogram 2.x for best results.
 
 import os
 import re
 import asyncio
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -31,30 +29,25 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID", "0"))
-# ADMIN_IDS should be a comma-separated list of numeric IDs, e.g. "12345,67890"
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
 if not (API_ID and API_HASH and BOT_TOKEN and LOG_GROUP_ID):
-    print("Missing required environment variables (API_ID/API_HASH/BOT_TOKEN/LOG_GROUP_ID). Exiting.")
-    raise SystemExit(1)
+    raise SystemExit("Missing required environment variables: API_ID, API_HASH, BOT_TOKEN, LOG_GROUP_ID")
 
 app = Client("kenshin_v2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=100)
 
-# ------------------ STORAGE (in-memory) ------------------
-# NOTE: For production across restarts, replace with persistent DB (Redis/Mongo/etc.)
+# ------------------ In-memory storage ------------------
+users_db: set[int] = set()                                   # all users who used /start
+user_templates: Dict[int, str] = {}                          # per-user caption template
+user_media_buffer: Dict[int, List[Message]] = {}             # per-user video buffer
+user_delay_task: Dict[int, asyncio.Task] = {}                # per-user scheduled tasks
+user_edit_all_mode: Dict[int, str] = {}                      # "yes" or "no"
+registered_channels: Dict[int, Dict[int, str]] = {}          # user_id -> {channel_id: title}
+huge_sessions: Dict[int, Dict[str, Any]] = {}                # user_id -> huge_upload state
+episode_stickers: Dict[int, Dict[int, str]] = {}             # user_id -> {episode: sticker_file_id}
+user_sessions: Dict[int, Dict[str, Any]] = {}                # user_id -> {"mode": "normal"/"huge_upload"/"add_channel"}
 
-users_db: set[int] = set()                       # all users who /start
-user_templates: Dict[int, str] = {}              # per-user caption template
-user_media_buffer: Dict[int, List[Message]] = {} # per-user incoming video buffer
-user_delay_task: Dict[int, asyncio.Task] = {}    # per-user delayed processing task
-user_edit_all_mode: Dict[int, str] = {}          # "yes" or "no"
-registered_channels: Dict[int, Dict[int, str]] = {}  # user_id -> {channel_id: channel_title}
-huge_sessions: Dict[int, Dict[str, Any]] = {}    # per-user huge_upload session state
-episode_stickers: Dict[int, Dict[int, str]] = {} # user_id -> {episode_number: sticker_file_id}
-user_sessions: Dict[int, Dict[str, Any]] = {}    # user_id -> {"mode": "normal"/"huge_upload"/"add_channel"}
-
-# ------------------ Defaults ------------------
-
+# ------------------ Defaults & templates ------------------
 DEFAULT_CAPTION = """<b>📺 ᴀɴɪᴍᴇ : {anime_name}
 ━━━━━━━━━━━━━━━━━━━⭒
 ❖ Season: {season}
@@ -115,19 +108,20 @@ def quality_order(q):
 def is_admin(user_id: int):
     return user_id in ADMIN_IDS
 
-# ------------------ Utilities ------------------
+# ------------------ Safe copy util (handles FloodWait) ------------------
 
 async def safe_copy(to_chat: int, from_chat: int, message_id: int, **kwargs):
-    """Copy a message and handle FloodWait / RPC errors gracefully."""
     while True:
         try:
             copied = await app.copy_message(chat_id=to_chat, from_chat_id=from_chat, message_id=message_id, **kwargs)
             return copied
         except FloodWait as e:
-            await asyncio.sleep(e.x)
-        except RPCError as e:
-            # non-retryable or unknown RPC error: raise so caller may continue
+            await asyncio.sleep(e.value)
+        except RPCError:
+            # Bubble up non-retryable RPC errors for caller to handle/log
             raise
+
+# ------------------ Session helpers ------------------
 
 def get_user_mode(uid: int) -> str:
     return user_sessions.get(uid, {}).get("mode", "normal")
@@ -144,8 +138,7 @@ def reset_user_mode(uid: int):
 async def cmd_start(client: Client, message: Message):
     uid = message.from_user.id
     users_db.add(uid)
-    if uid not in user_templates:
-        user_templates[uid] = DEFAULT_CAPTION
+    user_templates.setdefault(uid, DEFAULT_CAPTION)
     reset_user_mode(uid)
     text = (
         "🔥 KENSHIN Caption Changer 2.02\n\n"
@@ -175,7 +168,7 @@ async def cmd_help(client: Client, message: Message):
         "Admin commands:\n"
         "/users — total users\n"
         "/broadcast TEXT — send TEXT to all users\n\n"
-        "Notes:\n- Bot must be admin in channels you register and in target channels.\n- Registrations are in-memory (restart clears). Use persistent DB for production."
+        "Notes:\n- Bot must be admin in channels you register and in target channels.\n- Registrations are in-memory (restart clears). Use DB for persistence."
     )
     await message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
@@ -233,13 +226,24 @@ async def cmd_set_sticker(client: Client, message: Message):
     episode_stickers[uid][next_ep] = message.reply_to_message.sticker.file_id
     await message.reply_text(f"✅ Sticker saved for episode {next_ep}")
 
+@app.on_message(filters.command("list_stickers") & filters.private)
+async def cmd_list_stickers(_, message: Message):
+    uid = message.from_user.id
+    stickers = episode_stickers.get(uid, {})
+    if not stickers:
+        return await message.reply_text("You have no stickers set. Use /set_sticker (reply to sticker).")
+    text_lines = ["Your episode stickers:"]
+    for ep, fid in sorted(stickers.items()):
+        text_lines.append(f"Episode {ep} -> {fid}")
+    await message.reply_text("\n".join(text_lines))
+
 # ------------------ Channel registration ------------------
 
 @app.on_message(filters.command("add_channels") & filters.private)
 async def cmd_add_channels(client: Client, message: Message):
     uid = message.from_user.id
     set_user_mode(uid, "add_channel")
-    await message.reply_text("🔁 Forward one message from each channel you want to register (forward exactly one message from the channel). When done, send /done_channels")
+    await message.reply_text("🔁 Forward one message from each channel you want to register (forward exactly that message). When done, send /done_channels")
 
 @app.on_message(filters.command("done_channels") & filters.private)
 async def cmd_done_channels(_, message: Message):
@@ -247,35 +251,48 @@ async def cmd_done_channels(_, message: Message):
     reset_user_mode(uid)
     await message.reply_text("✅ Channel registration finished. Use /list_channels to see registered channels.")
 
+def _get_forward_source_chat_id(msg: Message) -> Optional[int]:
+    # new property forward_origin may be present; support both
+    if getattr(msg, "forward_from_chat", None):
+        try:
+            return msg.forward_from_chat.id
+        except:
+            pass
+    # fallback to forward_origin.chat.sender_chat path used in newer Pyrogram/Telegram
+    fo = getattr(msg, "forward_origin", None)
+    if fo and getattr(fo, "chat", None):
+        # forward_origin.chat may be a Chat or SenderChat; both have id attribute
+        try:
+            return fo.chat.id
+        except:
+            pass
+    # also handle forward_sender_name forwarded from users without channel info
+    return None
+
 @app.on_message(filters.forwarded & filters.private)
 async def handle_forward_registration(client: Client, message: Message):
     uid = message.from_user.id
-    mode = get_user_mode(uid := message.from_user.id)
-    # Only accept forwarded messages while in add_channel mode
-    if user_sessions.get(uid, {}).get("mode") != "add_channel":
-        return
-    chat = message.forward_from_chat
-    if not chat:
-        return await message.reply_text("Forward a message directly from the channel (not a forward-of-forward).")
-    # verify bot is admin in that channel
+    if get_user_mode(uid) != "add_channel":
+        return  # only accept when in add_channel mode
+    source_chat_id = _get_forward_source_chat_id(message)
+    if not source_chat_id:
+        return await message.reply_text("Could not detect source chat from forwarded message. Forward a direct message from the channel.")
+    # verify bot admin in that channel
     try:
-        bot_member = await client.get_chat_member(chat.id, "me")
+        bot_member = await client.get_chat_member(source_chat_id, "me")
     except Exception as e:
-        return await message.reply_text("Failed to query channel. Make sure bot is added to that channel.")
+        return await message.reply_text("Failed to query channel. Make sure bot is a member/admin of the channel.")
     if bot_member.status not in ("administrator", "creator"):
         return await message.reply_text("❌ I must be admin in that channel to register it. Make me admin and forward again.")
-    # verify the forwarder is admin too (best-effort)
+    # record channel
+    registered_channels.setdefault(uid, {})
     try:
-        user_member = await client.get_chat_member(chat.id, message.from_user.id)
-        if user_member.status not in ("administrator", "creator"):
-            # not strictly required, but earlier user wanted to be admin
-            await message.reply_text("You are not an admin in that channel (bot still registered it).")
+        chat = await client.get_chat(source_chat_id)
+        title = chat.title or str(source_chat_id)
     except:
-        # ignore if API can't fetch (private)
-        pass
-    registered_channels.setdefault(message.from_user.id, {})
-    registered_channels[message.from_user.id][chat.id] = chat.title or str(chat.id)
-    await message.reply_text(f"✅ Registered channel: {chat.title or chat.id}")
+        title = str(source_chat_id)
+    registered_channels[uid][source_chat_id] = title
+    await message.reply_text(f"✅ Registered channel: {title}")
 
 @app.on_message(filters.command("list_channels") & filters.private)
 async def cmd_list_channels(client: Client, message: Message):
@@ -290,25 +307,7 @@ async def cmd_list_channels(client: Client, message: Message):
 
 # ------------------ Video processing queue ------------------
 
-@app.on_message(filters.video & filters.private)
-async def handle_incoming_video_private(client: Client, message: Message):
-    # For private chats — normal behaviour
-    await _enqueue_video_for_user(message)
-
-@app.on_message(filters.video & ~filters.private)
-async def handle_incoming_video_other(client: Client, message: Message):
-    # For groups/channels where bot receives videos directly (not forwarded)
-    # Enqueue only if user is not in a special session (huge_upload/add_channel)
-    uid = message.from_user.id if message.from_user else None
-    if uid:
-        mode = get_user_mode(uid)
-        if mode in ("huge_upload", "add_channel"):
-            return  # ignore normal processing while in session
-    await _enqueue_video_for_user(message)
-
 async def _enqueue_video_for_user(message: Message):
-    # Accept videos sent by users (or in groups)
-    # Identify owner by message.from_user (works for private and groups)
     if not message.from_user:
         return
     uid = message.from_user.id
@@ -317,14 +316,23 @@ async def _enqueue_video_for_user(message: Message):
         user_media_buffer[uid] = []
     user_media_buffer[uid].append(message)
     # schedule processing (cancel previous pending task)
-    if uid in user_delay_task:
+    if uid in user_delay_task and not user_delay_task[uid].done():
         user_delay_task[uid].cancel()
     user_delay_task[uid] = asyncio.create_task(_process_after_delay(uid))
 
+@app.on_message(filters.video & (filters.private | filters.group | filters.channel))
+async def on_video_message(client: Client, message: Message):
+    uid = message.from_user.id if message.from_user else None
+    if uid:
+        mode = get_user_mode(uid)
+        if mode in ("huge_upload", "add_channel"):
+            # ignore normal enqueue while user is in a flow
+            return
+    await _enqueue_video_for_user(message)
+
 async def _process_after_delay(user_id: int):
-    # buffer wait
     await asyncio.sleep(0.2)
-    messages = user_media_buffer.get(user_id, [])[:]
+    messages = list(user_media_buffer.get(user_id, []))
     if not messages:
         return
     edit_all = user_edit_all_mode.get(user_id, "no")
@@ -335,40 +343,43 @@ async def _process_after_delay(user_id: int):
         media_list.append((data.get("episode", 0), quality_order(data.get("quality", 0)), msg))
     media_list.sort(key=lambda x: (x[0], x[1]))
     # process in order
-    for ep, _, msg in media_list:
+    for _, _, msg in media_list:
         try:
             data = extract_data(msg.caption or "")
-            template = user_templates.get(user_id, DEFAULT_CAPTION)
-            new_caption = format_caption(template, data)
-            # copy message with new caption back to same chat
-            sent = await safe_copy(
-                to_chat=msg.chat.id,
-                from_chat=msg.chat.id,
-                message_id=msg.id,
-                caption=new_caption,
-                parse_mode=ParseMode.HTML
-            )
-            # copy to log group
+            tpl = user_templates.get(user_id, DEFAULT_CAPTION)
+            caption = format_caption(tpl, data)
+            # copy message back to same chat with new caption
+            try:
+                sent = await safe_copy(
+                    to_chat=msg.chat.id,
+                    from_chat=msg.chat.id,
+                    message_id=msg.id,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                print("Error copying message:", e)
+                continue
+            # copy to log group (best-effort)
             try:
                 await sent.copy(LOG_GROUP_ID)
             except:
                 pass
-            # send episode sticker if available for this user
-            sticker_file_id = episode_stickers.get(user_id, {}).get(data.get("episode"))
+            # send sticker if user has one for this episode (best-effort)
+            ep_num = data.get("episode")
+            sticker_file_id = episode_stickers.get(user_id, {}).get(ep_num)
             if sticker_file_id:
                 try:
                     await app.send_sticker(chat_id=msg.chat.id, sticker=sticker_file_id)
                 except:
                     pass
         except Exception as e:
-            # print error to logs (avoid crashing)
             print("PROCESS ERROR:", e)
-        # small delay to avoid floods
         await asyncio.sleep(0.2)
     # clear buffer
     user_media_buffer[user_id] = []
 
-# ------------------ Huge upload flow (forward FIRST & LAST messages) ------------------
+# ------------------ Huge upload flow ------------------
 
 @app.on_message(filters.command("huge_upload") & filters.private)
 async def cmd_huge_upload_start(client: Client, message: Message):
@@ -382,102 +393,89 @@ async def handle_huge_forward_steps(client: Client, message: Message):
     uid = message.from_user.id
     session = huge_sessions.get(uid)
     if not session or get_user_mode(uid) != "huge_upload":
-        return  # not in huge_upload flow
-
-    step = session.get("step", 1)
-    fchat = message.forward_from_chat
+        return
+    src_chat_id = _get_forward_source_chat_id(message)
+    if not src_chat_id:
+        return await message.reply_text("Could not detect source chat from forwarded message. Forward a direct message from the channel.")
     fmid = message.forward_from_message_id
-
-    if not fchat or not fmid:
-        return await message.reply_text("Forward a direct message from the source (not a forward-of-forward).")
-
-    # STEP 1: record first
-    if step == 1:
-        session["first_chat"] = fchat.id
+    # record first
+    if session["step"] == 1:
+        session["first_chat"] = src_chat_id
         session["first_id"] = fmid
         session["step"] = 2
         await message.reply_text("✅ First message recorded.\n\nNow forward the LAST message from the same source channel/group.")
         return
-
-    # STEP 2: record last (must be same source)
-    if step == 2:
-        if fchat.id != session.get("first_chat"):
-            return await message.reply_text("The LAST message must be forwarded from the SAME source channel/group as the FIRST message. Forward it again.")
-        session["last_chat"] = fchat.id
+    # record last
+    if session["step"] == 2:
+        if src_chat_id != session.get("first_chat"):
+            return await message.reply_text("The LAST message must be forwarded from the SAME source channel/group as the FIRST. Forward it again.")
+        session["last_chat"] = src_chat_id
         session["last_id"] = fmid
         session["step"] = 3
-        # show registered channels as inline buttons for target selection
+        # present user's registered channels for selection
         chans = registered_channels.get(uid, {})
         if not chans:
-            # reset session and instruct
             reset_user_mode(uid)
             huge_sessions.pop(uid, None)
             return await message.reply_text("You have no registered target channels. Use /add_channels and forward a message from your target channel(s) first.")
-        # build keyboard
         buttons = []
         for cid, title in chans.items():
             buttons.append([InlineKeyboardButton(text=title[:40], callback_data=f"huge_target:{cid}")])
         await message.reply_text("Choose a target channel to upload into:", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
-# callback to receive target channel selection
 @app.on_callback_query(filters.regex(r"^huge_target:(-?\d+)$"))
 async def cb_huge_target(client: Client, cq: CallbackQuery):
     uid = cq.from_user.id
-    match = re.match(r"^huge_target:(-?\d+)$", cq.data)
-    if not match:
-        return await cq.answer("Invalid selection.", show_alert=True)
-    target_cid = int(match.group(1))
-    session = huge_sessions.get(uid)
-    if not session or get_user_mode(uid) != "huge_upload":
-        return await cq.answer("Session expired.", show_alert=True)
-    source_chat = session.get("first_chat")
-    first_id = session.get("first_id")
-    last_id = session.get("last_id")
-    if not (source_chat and first_id and last_id):
-        return await cq.answer("Session data missing.", show_alert=True)
-    # check bot is admin in target channel
+    m = huge_sessions.get(uid)
+    if not m or get_user_mode(uid) != "huge_upload":
+        return await cq.answer("Session expired", show_alert=True)
+    target_cid = int(re.match(r"^huge_target:(-?\d+)$", cq.data).group(1))
+    # verify bot admin in target
     try:
         bot_member = await app.get_chat_member(target_cid, "me")
         if bot_member.status not in ("administrator", "creator"):
             return await cq.answer("I am not admin in the selected target channel.", show_alert=True)
-    except Exception as e:
-        return await cq.answer("Failed to verify target channel admin status.", show_alert=True)
-
+    except Exception:
+        return await cq.answer("Failed to verify target channel.", show_alert=True)
     await cq.message.edit_text("✅ Target selected. Starting upload...")
+    # fire background task
+    asyncio.create_task(_process_huge_upload(uid, m["first_chat"], m["first_id"], m["last_id"], target_cid, cq.message.chat.id))
+    await cq.answer("Upload started (in background).")
 
-    # process upload in background task (don't block callback)
-    asyncio.create_task(_process_huge_upload(uid, source_chat, first_id, last_id, target_cid, cq.message.chat.id))
-    # respond to callback
-    await cq.answer("Upload queued. See progress messages here.")
-
-async def _iter_messages_between(chat_id: int, first_id: int, last_id: int):
-    """
-    Yield messages from chat_id between first_id and last_id inclusive
-    in ascending message id (first -> last).
-    """
-    # ensure first_id <= last_id
+async def _iter_messages_between(chat_id: int, first_id: int, last_id: int) -> List[Message]:
+    # returns messages in ascending order (first->last) inclusive
+    # handle first > last by swapping
     if first_id <= last_id:
         start, end = first_id, last_id
-        forward = True
     else:
-        # if user forwarded in reverse (rare), process in ascending order anyway
         start, end = last_id, first_id
-        forward = False
-
-    # Telegram doesn't provide range fetch in single call; iterate history from end down to start then reverse
-    msgs = []
-    async for m in app.get_chat_history(chat_id, offset_id=end + 1, limit=0):
-        # This iterator yields messages < offset_id descending; we'll stop when message.id < start
-        if m.id < start:
-            break
-        if start <= m.id <= end:
-            msgs.append(m)
-    msgs.reverse()  # ascending
-    return msgs
+    collected: List[Message] = []
+    # Pyrogram's iter_history/get_chat_history may be used; we iterate from end backwards and reverse
+    try:
+        async for m in app.get_chat_history(chat_id, offset_id=end + 1):
+            if m.id < start:
+                break
+            if start <= m.id <= end:
+                collected.append(m)
+    except TypeError:
+        # fallback older signature
+        async for m in app.iter_history(chat_id, offset_id=end + 1):
+            if m.id < start:
+                break
+            if start <= m.id <= end:
+                collected.append(m)
+    except TypeError:
+        # fallback older signature
+        async for m in app.iter_history(chat_id, offset_id=end + 1):
+            if m.id < start:
+                break
+            if start <= m.id <= end:
+                collected.append(m)
+    collected.reverse()
+    return collected
 
 async def _process_huge_upload(user_id: int, source_chat: int, first_id: int, last_id: int, target_channel: int, reply_chat: int):
-    """Copies messages from source_chat between first_id..last_id, renames videos, copies to target, logs to LOG_GROUP_ID."""
     try:
         await app.send_message(reply_chat, "🔁 Collecting messages from source...")
         msgs = await _iter_messages_between(source_chat, first_id, last_id)
@@ -486,29 +484,20 @@ async def _process_huge_upload(user_id: int, source_chat: int, first_id: int, la
             reset_user_mode(user_id)
             huge_sessions.pop(user_id, None)
             return
-
-        # filter videos and prepare sortable list
-        media_items = []
+        # filter videos
+        media_items: List[Tuple[int, int, Message]] = []
         for m in msgs:
             if m.video:
                 data = extract_data(m.caption or "")
                 media_items.append((data.get("episode", 0), quality_order(data.get("quality", 0)), m))
-
-        # sort by episode then quality order
         media_items.sort(key=lambda x: (x[0], x[1]))
-
         await app.send_message(reply_chat, f"Found {len(media_items)} video items. Starting upload...")
-
-        # perform copy & rename in order
         count = 0
         for ep_num, _, m in media_items:
-            # prepare caption using user's template (use the session owner template or default)
             tpl = user_templates.get(user_id, DEFAULT_CAPTION)
             data = extract_data(m.caption or "")
             caption = format_caption(tpl, data)
-
             try:
-                # copy message to target with new caption
                 copied = await safe_copy(
                     to_chat=target_channel,
                     from_chat=source_chat,
@@ -518,29 +507,21 @@ async def _process_huge_upload(user_id: int, source_chat: int, first_id: int, la
                 )
             except Exception as e:
                 print("Copy error (huge upload):", e)
-                # continue to next
                 await asyncio.sleep(0.2)
                 continue
-
-            # copy to log group (best-effort)
             try:
                 await copied.copy(LOG_GROUP_ID)
             except:
                 pass
-
-            # send per-episode sticker in target channel if set
             sticker_file_id = episode_stickers.get(user_id, {}).get(data.get("episode"))
             if sticker_file_id:
                 try:
                     await app.send_sticker(target_channel, sticker_file_id)
                 except:
                     pass
-
             count += 1
-            # small delay to reduce flood risk
             await asyncio.sleep(0.2)
-
-        await app.send_message(reply_chat, f"✅ Huge upload completed: {count} items uploaded to target channel.")
+        await app.send_message(reply_chat, f"✅ Huge upload completed: {count} items uploaded.")
     except Exception as exc:
         print("HUGE UPLOAD ERROR:", exc)
         try:
@@ -548,11 +529,10 @@ async def _process_huge_upload(user_id: int, source_chat: int, first_id: int, la
         except:
             pass
     finally:
-        # cleanup session state
         reset_user_mode(user_id)
         huge_sessions.pop(user_id, None)
 
-# ------------------ Safety: reset user sessions on /cancel ------------------
+# ------------------ Cancel flow ------------------
 
 @app.on_message(filters.command("cancel") & filters.private)
 async def cmd_cancel(client: Client, message: Message):
@@ -561,7 +541,7 @@ async def cmd_cancel(client: Client, message: Message):
     huge_sessions.pop(uid, None)
     await message.reply_text("✅ Session cancelled and normal processing resumed.")
 
-# ------------------ Start the bot ------------------
+# ------------------ Startup log ------------------
 
 if __name__ == "__main__":
     print("🔥 KENSHIN Caption Changer 2.02 (Pyrogram) starting...")
