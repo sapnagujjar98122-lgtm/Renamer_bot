@@ -155,9 +155,9 @@ async def set_caption(client,message):
 async def edit_all(client,message):
     if len(message.command)<2: return
     choice=message.command[1].lower()
-        if choice not in ["yes","no"]: return
-        user_edit_all_mode[message.from_user.id]=choice
-        await message.reply_text(f"Mode set: {choice}")
+    if choice not in ["yes","no"]: return
+    user_edit_all_mode[message.from_user.id]=choice
+    await message.reply_text(f"Mode set: {choice}")
 
 # ================== STICKER ==================
 @app.on_message(filters.command("set_sticker"))
