@@ -68,7 +68,7 @@ def extract_data(text):
     return data
 
 def quality_order(q):
-    order = [480p, 720p, 1080p, 2160p]
+    order = [480, 720, 1080, 2160]
     return order.index(q) if q in order else 999
 
 def format_caption(template, data):
