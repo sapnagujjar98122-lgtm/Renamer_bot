@@ -1,11 +1,13 @@
 # =========================================================
-# KENSHIN Caption Changer 2.01 - Full Extended
+# KENSHIN Caption Changer 2.01 - Pyrogram Version
 # =========================================================
 
-import os, re, asyncio
+import os
+import re
+import asyncio
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ParseMode
+from pyrogram.types import Message
+
 # ================== ENV ==================
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -15,11 +17,10 @@ ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS","").split(",")))
 
 # ================== APP ==================
 app = Client(
-    "KENSHINCaptionChanger2.01",
+    "KENSHINCaptionChangerPy",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    workers=100
+    bot_token=BOT_TOKEN
 )
 
 # ================== STORAGE ==================
@@ -229,33 +230,6 @@ async def process_after_delay(user_id):
         await asyncio.sleep(0.2)
     user_media_buffer[user_id]=[]
 
-# ================== CHANNEL REGISTRATION & HUGE UPLOAD ==================
-@app.on_message(filters.command("add_channels"))
-async def add_channels(_,msg):
-    user_sessions[msg.from_user.id] = {"mode":"add_channel"}
-    await msg.reply("📩 Forward a message from your channel to register it.")
-
-@app.on_message(filters.forwarded)
-async def register_forward(client,msg):
-    user_id=msg.from_user.id
-    chat=msg.forward_from_chat
-    if not chat: return
-    # check bot is admin
-    member_bot = await client.get_chat_member(chat.id,"me")
-    if member_bot.status not in ["administrator","creator"]:
-        return await msg.reply("❌ Bot must be admin in channel")
-    if user_id not in registered_channels: registered_channels[user_id]=[]
-    if chat.id not in registered_channels[user_id]:
-        registered_channels[user_id].append(chat.id)
-    await msg.reply(f"✅ Channel Added: {chat.title}")
-    user_sessions[user_id]={"mode":"normal"}
-
-@app.on_message(filters.command("huge_upload"))
-async def huge_upload_start(_,msg):
-    user_sessions[msg.from_user.id]={"mode":"huge_upload"}
-    huge_sessions[msg.from_user.id]={"step":1,"first_msg":None,"last_msg":None}
-    await msg.reply("📩 Forward FIRST message from source channel to start huge upload")
-
 # ================== RUN BOT ==================
-print("🔥 KENSHIN Caption Changer 2.01 Running")
+print("🔥 KENSHIN Caption Changer Pyrogram Running")
 app.run()
