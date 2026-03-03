@@ -457,4 +457,112 @@ async def _iter_messages_between(chat_id: int, first_id: int, last_id: int):
     in ascending message id (first -> last).
     """
     # ensure first_id <= last_id
-    if first_id <= last_i
+    if first_id <= last_id:
+        start, end = first_id, last_id
+        forward = True
+    else:
+        # if user forwarded in reverse (rare), process in ascending order anyway
+        start, end = last_id, first_id
+        forward = False
+
+    # Telegram doesn't provide range fetch in single call; iterate history from end down to start then reverse
+    msgs = []
+    async for m in app.get_chat_history(chat_id, offset_id=end + 1, limit=0):
+        # This iterator yields messages < offset_id descending; we'll stop when message.id < start
+        if m.id < start:
+            break
+        if start <= m.id <= end:
+            msgs.append(m)
+    msgs.reverse()  # ascending
+    return msgs
+
+async def _process_huge_upload(user_id: int, source_chat: int, first_id: int, last_id: int, target_channel: int, reply_chat: int):
+    """Copies messages from source_chat between first_id..last_id, renames videos, copies to target, logs to LOG_GROUP_ID."""
+    try:
+        await app.send_message(reply_chat, "🔁 Collecting messages from source...")
+        msgs = await _iter_messages_between(source_chat, first_id, last_id)
+        if not msgs:
+            await app.send_message(reply_chat, "No messages found in that range.")
+            reset_user_mode(user_id)
+            huge_sessions.pop(user_id, None)
+            return
+
+        # filter videos and prepare sortable list
+        media_items = []
+        for m in msgs:
+            if m.video:
+                data = extract_data(m.caption or "")
+                media_items.append((data.get("episode", 0), quality_order(data.get("quality", 0)), m))
+
+        # sort by episode then quality order
+        media_items.sort(key=lambda x: (x[0], x[1]))
+
+        await app.send_message(reply_chat, f"Found {len(media_items)} video items. Starting upload...")
+
+        # perform copy & rename in order
+        count = 0
+        for ep_num, _, m in media_items:
+            # prepare caption using user's template (use the session owner template or default)
+            tpl = user_templates.get(user_id, DEFAULT_CAPTION)
+            data = extract_data(m.caption or "")
+            caption = format_caption(tpl, data)
+
+            try:
+                # copy message to target with new caption
+                copied = await safe_copy(
+                    to_chat=target_channel,
+                    from_chat=source_chat,
+                    message_id=m.id,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                print("Copy error (huge upload):", e)
+                # continue to next
+                await asyncio.sleep(0.2)
+                continue
+
+            # copy to log group (best-effort)
+            try:
+                await copied.copy(LOG_GROUP_ID)
+            except:
+                pass
+
+            # send per-episode sticker in target channel if set
+            sticker_file_id = episode_stickers.get(user_id, {}).get(data.get("episode"))
+            if sticker_file_id:
+                try:
+                    await app.send_sticker(target_channel, sticker_file_id)
+                except:
+                    pass
+
+            count += 1
+            # small delay to reduce flood risk
+            await asyncio.sleep(0.2)
+
+        await app.send_message(reply_chat, f"✅ Huge upload completed: {count} items uploaded to target channel.")
+    except Exception as exc:
+        print("HUGE UPLOAD ERROR:", exc)
+        try:
+            await app.send_message(reply_chat, f"❌ Upload failed: {exc}")
+        except:
+            pass
+    finally:
+        # cleanup session state
+        reset_user_mode(user_id)
+        huge_sessions.pop(user_id, None)
+
+# ------------------ Safety: reset user sessions on /cancel ------------------
+
+@app.on_message(filters.command("cancel") & filters.private)
+async def cmd_cancel(client: Client, message: Message):
+    uid = message.from_user.id
+    reset_user_mode(uid)
+    huge_sessions.pop(uid, None)
+    await message.reply_text("✅ Session cancelled and normal processing resumed.")
+
+# ------------------ Start the bot ------------------
+
+if __name__ == "__main__":
+    print("🔥 KENSHIN Caption Changer 2.02 (Pyrogram) starting...")
+    app.run()
