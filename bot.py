@@ -2,27 +2,29 @@ import os
 import re
 import asyncio
 import aiohttp
-from pyrofork import Client, filters, idle
-from pyrofork.errors import FloodWait
-from pyrofork.types import Message
+from pyrogram import Client, filters, idle
+from pyrogram.errors import FloodWait
+from pyrogram.types import Message
 
 # ================= CONFIG =================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))
 STORE_GROUP_ID = int(os.getenv("STORE_GROUP_ID"))
 LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID"))
 
-ANILIST_CLIENT_ID = os.getenv("ANILIST_CLIENT_ID")
-ANILIST_CLIENT_SECRET = os.getenv("ANILIST_CLIENT_SECRET")
-
-bot = Client("empire_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Client(
+    "EmpireBot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
 users_db = set()
-caption_template = None
+video_caption_template = None
 anime_details_template = None
 edit_all_mode = True
 
@@ -30,40 +32,37 @@ edit_all_mode = True
 
 def extract_episode(text):
     if not text: return 0
-    match = re.search(r'ep(?:isode)?\s?(\d+)', text, re.I)
-    return int(match.group(1)) if match else 0
+    m = re.search(r'ep(?:isode)?\s?(\d+)', text, re.I)
+    return int(m.group(1)) if m else 0
 
 def extract_quality(text):
     if not text: return "0"
-    match = re.search(r'(480p|720p|1080p|2160p|4k)', text, re.I)
-    return match.group(1) if match else "0"
+    m = re.search(r'(480p|720p|1080p|2160p|4k)', text, re.I)
+    return m.group(1) if m else "0"
 
 def sort_key(msg):
-    ep = extract_episode(msg.caption or "")
-    quality = extract_quality(msg.caption or "")
-    quality_order = {"480p":1,"720p":2,"1080p":3,"2160p":4,"4k":4}
-    return (ep, quality_order.get(quality, 0))
+    order = {"480p":1,"720p":2,"1080p":3,"2160p":4,"4k":4}
+    return (extract_episode(msg.caption or ""),
+            order.get(extract_quality(msg.caption or ""), 0))
 
-# ================= ANILIST FETCH =================
+# ================= ANILIST =================
 
-async def fetch_anime_data(title):
+async def fetch_anime(title):
     query = """
     query ($search: String) {
       Media (search: $search, type: ANIME) {
-        title { romaji english }
+        title { english romaji }
         genres
-        description(asHtml: false)
+        description
         coverImage { large }
         episodes
-        status
       }
     }
     """
-
     async with aiohttp.ClientSession() as session:
         async with session.post(
             "https://graphql.anilist.co",
-            json={"query": query, "variables": {"search": title}},
+            json={"query": query, "variables": {"search": title}}
         ) as resp:
             data = await resp.json()
 
@@ -74,21 +73,20 @@ async def fetch_anime_data(title):
         "genres": ", ".join(media["genres"]),
         "synopsis": re.sub('<.*?>', '', media["description"] or ""),
         "poster": media["coverImage"]["large"],
-        "episodes": str(media["episodes"] or "Ongoing"),
-        "status": media["status"]
+        "episodes": str(media["episodes"] or "Ongoing")
     }
 
 # ================= COMMANDS =================
 
-@bot.on_message(filters.private & filters.incoming)
-async def user_tracker(_, msg: Message):
+@bot.on_message(filters.private)
+async def track_users(_, msg):
     if msg.from_user:
         users_db.add(msg.from_user.id)
 
 @bot.on_message(filters.command("setcaption") & filters.user(ADMIN_IDS))
 async def set_caption(_, msg):
-    global caption_template
-    caption_template = msg.text.split(None,1)[1]
+    global video_caption_template
+    video_caption_template = msg.text.split(None,1)[1]
     await msg.reply("✅ Video Caption Template Saved")
 
 @bot.on_message(filters.command("anime_dl_caption") & filters.user(ADMIN_IDS))
@@ -105,19 +103,19 @@ async def edit_mode(_, msg):
     await msg.reply(f"Mode Updated: {mode}")
 
 @bot.on_message(filters.command("users") & filters.user(ADMIN_IDS))
-async def total_users(_, msg):
-    await msg.reply(f"👥 Total Users: {len(users_db)}")
+async def users(_, msg):
+    await msg.reply(f"👥 Users: {len(users_db)}")
 
 @bot.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(_, msg):
     text = msg.text.split(None,1)[1]
-    for user in users_db:
+    for u in users_db:
         try:
-            await bot.send_message(user, text)
-            await asyncio.sleep(0.3)
+            await bot.send_message(u, text)
+            await asyncio.sleep(0.2)
         except:
-            continue
-    await msg.reply("Broadcast Completed")
+            pass
+    await msg.reply("Broadcast Done")
 
 # ================= HUGE UPLOAD =================
 
@@ -136,38 +134,28 @@ async def huge_upload(_, msg: Message):
     await msg.reply("Send Target Channel Username or ID")
     target = (await bot.listen(msg.chat.id)).text.strip()
 
-    await msg.reply("Send Anime Name For Metadata")
+    await msg.reply("Send Anime Name")
     anime_name = (await bot.listen(msg.chat.id)).text.strip()
 
-    await msg.reply("🚀 Starting Empire Upload...")
+    await msg.reply("🚀 Processing...")
 
-    anime_data = await fetch_anime_data(anime_name)
+    anime = await fetch_anime(anime_name)
 
-    # Upload poster + details
+    # Upload Poster + Details
     if anime_details_template:
-        details_caption = anime_details_template.format(
-            anime=anime_data["title"],
+        caption = anime_details_template.format(
+            anime=anime["title"],
             season="1",
-            episodes=anime_data["episodes"],
+            episodes=anime["episodes"],
             audio="Hindi",
             quality="480p • 720p • 1080p",
-            genre=anime_data["genres"],
-            synopsis=anime_data["synopsis"]
+            genre=anime["genres"],
+            synopsis=anime["synopsis"]
         )
+        await bot.send_photo(target, anime["poster"], caption=caption)
 
-        await bot.send_photo(
-            target,
-            anime_data["poster"],
-            caption=details_caption
-        )
-
-    # Stickers
-    sticker_pack = await bot.get_sticker_set("AnimeNetworkIndia")
-    start_sticker = sticker_pack.stickers[0].file_id
-    black_sticker = sticker_pack.stickers[1].file_id
-    end_sticker = sticker_pack.stickers[2].file_id
-
-    await bot.send_sticker(target, start_sticker)
+    stickers = await bot.get_sticker_set("AnimeNetworkIndia")
+    await bot.send_sticker(target, stickers.stickers[0].file_id)
 
     copied = []
 
@@ -189,7 +177,7 @@ async def huge_upload(_, msg: Message):
     for m in copied:
         ep = extract_episode(m.caption or "")
         if current_ep and ep != current_ep:
-            await bot.send_sticker(target, black_sticker)
+            await bot.send_sticker(target, stickers.stickers[1].file_id)
         current_ep = ep
 
         if edit_all_mode:
@@ -200,39 +188,31 @@ async def huge_upload(_, msg: Message):
         await bot.delete_messages(STORE_GROUP_ID, m.id)
         await asyncio.sleep(1)
 
-    await bot.send_sticker(target, end_sticker)
+    await bot.send_sticker(target, stickers.stickers[2].file_id)
+    await msg.reply("✅ Upload Completed")
 
-    await msg.reply("✅ Empire Upload Completed")
-
-# ================= START & HELP =================
+# ================= START =================
 
 @bot.on_message(filters.command("start"))
 async def start(_, msg):
-    await msg.reply(f"""🔥 Advance Caption Empire Bot
-
-Hi {msg.from_user.mention}
-
-100+ Channel Automation Ready 🚀
-Use /help to see all commands.""")
+    await msg.reply("🔥 Anime Empire Bot Running")
 
 @bot.on_message(filters.command("help"))
 async def help_cmd(_, msg):
     await msg.reply("""
-📌 ADMIN COMMANDS
-
-/setcaption - Set video caption template
-/anime_dl_caption - Set anime details template
-/edit_all yes/no - Send full message or only video
-/huge_upload - Massive range upload
-/broadcast - Broadcast to all users
-/users - Total user count
+/setcaption
+/anime_dl_caption
+/edit_all yes/no
+/huge_upload
+/broadcast
+/users
 """)
 
 # ================= RUN =================
 
 async def main():
     await bot.start()
-    print("🔥 TELEGRAM EMPIRE SYSTEM RUNNING")
+    print("🔥 Empire Bot Running")
     await idle()
 
 if __name__ == "__main__":
