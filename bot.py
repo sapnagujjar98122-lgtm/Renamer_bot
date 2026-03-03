@@ -1,272 +1,222 @@
-import re
 import os
+import re
 import asyncio
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.enums import ParseMode
+from pyrofork import Client, filters
+from pyrofork.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrofork.enums import ParseMode
 
-# ================== ENV ==================
+# ================= ENV =================
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID"))
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 
-# ================== APP ==================
+# ================= APP =================
 
 app = Client(
-    "UltimateAnimeBot",
+    "EmpireUltimateBot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    workers=100
 )
 
-# ================== STORAGE ==================
+# ================= STORAGE =================
 
-users_db = set()
-user_templates = {}
-user_media_buffer = {}
-user_delay_task = {}
-user_edit_all_mode = {}
+registered_channels = {}      # user_id: [channel_ids]
+huge_sessions = {}            # user_id: session data
+user_templates = {}           # rename template
 
-# ================== DEFAULT CAPTION ==================
+DEFAULT_CAPTION = """<b>📺 {anime_name}
+━━━━━━━━━━━━━━━━━━━
+❖ Season: {season}
+❖ Episode: {episode}
+❖ Quality: {quality}p
+━━━━━━━━━━━━━━━━━━━</b>"""
 
-DEFAULT_CAPTION = """<b> 📺 ᴀɴɪᴍᴇ : {anime_name}
-━━━━━━━━━━━━━━━━━━━⭒
-❖ Sᴇᴀsᴏɴ: {season}
-❖ ᴇᴘɪꜱᴏᴅᴇ: {episode}
-❖ ᴀᴜᴅɪᴏ: {audio}
-❖ Qᴜᴀʟɪᴛʏ: {quality}
-━━━━━━━━━━━━━━━━━━━⭒
-<blockquote>POWERED BY: [@KENSHIN_ANIME & @MANWHA_VERSE]</blockquote></b>"""
+# ================= UTIL =================
 
-# ================== UTIL FUNCTIONS ==================
-
-def extract_data(text: str):
+def extract_data(text):
     data = {
         "anime_name": "Unknown",
-        "season": "Unknown",
+        "season": "1",
         "episode": 0,
-        "audio": "Unknown",
-        "quality": 0
+        "quality": 480
     }
 
     if not text:
         return data
 
-    name = re.search(r"[Aaᴀ][Nnɴ][Iiɪ][Mmᴍ][Eeᴇ]\s*:\s*(.+)", text)
+    name = re.search(r"Anime\s*:\s*(.+)", text, re.I)
     if name:
-        data["anime_name"] = name.group(1).strip()
+        data["anime_name"] = name.group(1)
 
-    season = re.search(r"[Ss]eason\s*:?\.?\s*(\d+)", text)
-    if season:
-        data["season"] = season.group(1)
-
-    ep = re.search(r"[Ee]pisode\s*:?\.?\s*(\d+)", text)
+    ep = re.search(r"Episode\s*(\d+)", text, re.I)
     if ep:
         data["episode"] = int(ep.group(1))
 
-    ql = re.search(r"(\d{3,4})p", text)
-    if ql:
-        data["quality"] = int(ql.group(1))
+    q = re.search(r"(\d{3,4})p", text)
+    if q:
+        data["quality"] = int(q.group(1))
 
-    audio = re.search(r"[Aa]udio\s*:\s*(.+)", text)
-    if audio:
-        data["audio"] = audio.group(1).strip()
+    season = re.search(r"Season\s*(\d+)", text, re.I)
+    if season:
+        data["season"] = season.group(1)
 
     return data
-
-def format_caption(template: str, data: dict):
-    for key, value in data.items():
-        template = template.replace(f"{{{key}}}", str(value))
-    return template
 
 def quality_order(q):
     order = [480, 720, 1080, 2160]
     return order.index(q) if q in order else 999
 
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
+def format_caption(template, data):
+    for k, v in data.items():
+        template = template.replace(f"{{{k}}}", str(v))
+    return template
 
-# ================== START ==================
+# ================= START =================
 
 @app.on_message(filters.command("start"))
-async def start(client, message):
-    user_id = message.from_user.id
-    users_db.add(user_id)
+async def start(_, msg):
+    await msg.reply("🔥 Empire Ultimate Bot Active!")
 
-    if user_id not in user_templates:
-        user_templates[user_id] = DEFAULT_CAPTION
+# ================= ADD CHANNELS =================
 
-    text = f"""🔥 Advance Caption Bot.
+@app.on_message(filters.command("add_channels"))
+async def add_channels(_, msg):
+    await msg.reply("📩 Resend any message from your channel with sender name")
 
-Hi {message.from_user.mention},
-Welcome to our bot. This bot is specially maked for anime uploaders and here you can rename any videos with your own caption in seconds.
+@app.on_message(filters.forwarded)
+async def save_channel(client, msg):
 
-My Owner : @Kenshin_anime_owner
-For any help : @KENSHIN_ANIME_CHAT"""
+    user_id = msg.from_user.id
+    chat = msg.forward_from_chat
 
-    await message.reply_text(text, parse_mode=ParseMode.HTML)
-
-# ================== HELP ==================
-
-@app.on_message(filters.command("help"))
-async def help_cmd(client, message):
-    help_text = """
-<b>🔥 COMPLETE BOT GUIDE</b>
-
-📌 How It Works:
-• Send multiple videos.
-• Bot waits 2 seconds.
-• Automatically sorts:
-Episode → 480p → 720p → 1080p → 2160p
-
-📌 Commands:
-/setcaption - Set your custom caption
-/edit_all yes - Rename + resend all messages
-/edit_all no - Rename only videos
-/users - Total users (Admin)
-/broadcast - Send message to all users (Admin)
-
-📌 Placeholders:
-{anime_name}
-{season}
-{episode}
-{audio}
-{quality}
-
-📌 Extra Features:
-• Original messages auto deleted
-• Renamed videos auto stored in log group
-• Smart quality sorting
-• HTML formatting supported
-"""
-
-    await message.reply_text(help_text, parse_mode=ParseMode.HTML)
-
-# ================== ADMIN COMMANDS ==================
-
-@app.on_message(filters.command("users"))
-async def users_cmd(client, message):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply_text(f"👥 Total Users: {len(users_db)}")
-
-@app.on_message(filters.command("broadcast"))
-async def broadcast(client, message):
-    if not is_admin(message.from_user.id):
+    if not chat:
         return
 
-    if len(message.command) < 2:
-        return await message.reply_text("Usage: /broadcast your message")
+    member_bot = await client.get_chat_member(chat.id, "me")
+    member_user = await client.get_chat_member(chat.id, user_id)
 
-    text = message.text.split(" ", 1)[1]
-    count = 0
+    if member_bot.status not in ["administrator", "creator"]:
+        return await msg.reply("❌ Bot must be admin in channel")
 
-    for user in users_db:
-        try:
-            await app.send_message(user, text)
-            count += 1
-        except:
-            pass
+    if member_user.status not in ["administrator", "creator"]:
+        return await msg.reply("❌ You must be admin of channel")
 
-    await message.reply_text(f"✅ Broadcast Sent to {count} users")
+    if user_id not in registered_channels:
+        registered_channels[user_id] = []
 
-# ================== SET CAPTION ==================
+    if chat.id not in registered_channels[user_id]:
+        registered_channels[user_id].append(chat.id)
 
-@app.on_message(filters.command("setcaption"))
-async def set_caption(client, message):
-    if len(message.command) < 2:
+    await msg.reply(f"✅ Channel Added: {chat.title}")
+
+# ================= HUGE UPLOAD START =================
+
+@app.on_message(filters.command("huge_upload"))
+async def huge_upload_start(_, msg):
+    huge_sessions[msg.from_user.id] = {"step": 1}
+    await msg.reply("📩 Resend FIRST message from source channel")
+
+# ================= HUGE STEPS =================
+
+@app.on_message(filters.forwarded)
+async def huge_steps(client, msg):
+
+    user_id = msg.from_user.id
+
+    if user_id not in huge_sessions:
         return
 
-    template = message.text.split(" ", 1)[1]
-    user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Caption Updated!")
+    session = huge_sessions[user_id]
+    source_chat = msg.forward_from_chat
 
-# ================== EDIT ALL ==================
-
-@app.on_message(filters.command("edit_all"))
-async def edit_all_cmd(client, message):
-    if len(message.command) < 2:
+    if not source_chat:
         return
 
-    choice = message.command[1].lower()
-    if choice not in ["yes", "no"]:
-        return
+    if session["step"] == 1:
+        session["first_id"] = msg.forward_from_message_id
+        session["source_chat"] = source_chat.id
+        session["step"] = 2
+        return await msg.reply("📩 Resend LAST message from source channel")
 
-    user_edit_all_mode[message.from_user.id] = choice
-    await message.reply_text(f"Mode set to: {choice}")
+    if session["step"] == 2:
+        session["last_id"] = msg.forward_from_message_id
+        session["step"] = 3
 
-# ================== COLLECT ==================
+        channels = registered_channels.get(user_id, [])
+        if not channels:
+            return await msg.reply("❌ No registered channels. Use /add_channels")
 
-@app.on_message(filters.all & ~filters.command(["start","help","setcaption","edit_all","users","broadcast"]))
-async def collect(client, message: Message):
-    user_id = message.from_user.id
+        buttons = []
+        for ch in channels:
+            chat = await client.get_chat(ch)
+            buttons.append([InlineKeyboardButton(chat.title, callback_data=f"upload_{ch}")])
 
-    if user_id not in user_media_buffer:
-        user_media_buffer[user_id] = []
+        await msg.reply(
+            "📢 Choose target channel",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
-    user_media_buffer[user_id].append(message)
+# ================= CALLBACK =================
 
-    if user_id in user_delay_task:
-        user_delay_task[user_id].cancel()
+@app.on_callback_query(filters.regex("upload_"))
+async def process_upload(client, callback):
 
-    user_delay_task[user_id] = asyncio.create_task(process_after_delay(user_id))
+    user_id = callback.from_user.id
+    target_channel = int(callback.data.split("_")[1])
 
-# ================== PROCESS ==================
+    session = huge_sessions.get(user_id)
+    if not session:
+        return await callback.answer("Session expired", show_alert=True)
 
-async def process_after_delay(user_id):
-    await asyncio.sleep(2)
+    await callback.message.edit_text("🚀 Processing Huge Upload...")
 
-    messages = user_media_buffer.get(user_id, [])
-    if not messages:
-        return
+    source_chat = session["source_chat"]
+    first_id = session["first_id"]
+    last_id = session["last_id"]
 
-    edit_all = user_edit_all_mode.get(user_id, "no")
+    messages = []
+
+    async for m in client.get_chat_history(source_chat, offset_id=last_id+1):
+        if m.id < first_id:
+            break
+        messages.append(m)
+
+    messages.reverse()
+
     media_list = []
 
-    for msg in messages:
-        if msg.video:
-            data = extract_data(msg.caption or "")
-            media_list.append((data["episode"], quality_order(data["quality"]), msg))
-        elif edit_all == "yes":
-            media_list.append((9999, 9999, msg))
+    for m in messages:
+        if m.video:
+            data = extract_data(m.caption or "")
+            media_list.append((data["episode"], quality_order(data["quality"]), m))
 
     media_list.sort(key=lambda x: (x[0], x[1]))
 
-    for _, _, msg in media_list:
-        try:
-            if msg.video:
-                data = extract_data(msg.caption or "")
-                template = user_templates.get(user_id, DEFAULT_CAPTION)
-                new_caption = format_caption(template, data)
+    for _, _, m in media_list:
 
-                sent = await app.copy_message(
-                    chat_id=msg.chat.id,
-                    from_chat_id=msg.chat.id,
-                    message_id=msg.id,
-                    caption=new_caption,
-                    parse_mode=ParseMode.HTML
-                )
+        data = extract_data(m.caption or "")
+        caption = format_caption(DEFAULT_CAPTION, data)
 
-                await sent.copy(LOG_GROUP_ID)
+        sent = await client.copy_message(
+            chat_id=target_channel,
+            from_chat_id=source_chat,
+            message_id=m.id,
+            caption=caption,
+            parse_mode=ParseMode.HTML
+        )
 
-            elif edit_all == "yes":
-                await app.copy_message(
-                    chat_id=msg.chat.id,
-                    from_chat_id=msg.chat.id,
-                    message_id=msg.id
-                )
+        await sent.copy(LOG_GROUP_ID)
 
-            await msg.delete()
-            await asyncio.sleep(0.3)
+        await asyncio.sleep(0.4)
 
-        except Exception as e:
-            print("Error:", e)
+    await callback.message.edit_text("✅ Huge Upload Completed!")
 
-    user_media_buffer[user_id] = []
+    del huge_sessions[user_id]
 
-print("🔥 Production Secure Bot Running")
+print("🔥 Empire Ultimate Huge System Running...")
 app.run()
