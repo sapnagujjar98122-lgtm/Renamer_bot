@@ -1,272 +1,239 @@
-import re
 import os
+import re
 import asyncio
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.enums import ParseMode
+import aiohttp
+from pyrofork import Client, filters, idle
+from pyrofork.errors import FloodWait
+from pyrofork.types import Message
 
-# ================== ENV ==================
+# ================= CONFIG =================
 
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))
+STORE_GROUP_ID = int(os.getenv("STORE_GROUP_ID"))
 LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID"))
 
-# ================== APP ==================
+ANILIST_CLIENT_ID = os.getenv("ANILIST_CLIENT_ID")
+ANILIST_CLIENT_SECRET = os.getenv("ANILIST_CLIENT_SECRET")
 
-app = Client(
-    "UltimateAnimeBot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
-
-# ================== STORAGE ==================
+bot = Client("empire_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 users_db = set()
-user_templates = {}
-user_media_buffer = {}
-user_delay_task = {}
-user_edit_all_mode = {}
+caption_template = None
+anime_details_template = None
+edit_all_mode = True
 
-# ================== DEFAULT CAPTION ==================
+# ================= UTILS =================
 
-DEFAULT_CAPTION = """<b> 📺 ᴀɴɪᴍᴇ : {anime_name}
-━━━━━━━━━━━━━━━━━━━⭒
-❖ Sᴇᴀsᴏɴ: {season}
-❖ ᴇᴘɪꜱᴏᴅᴇ: {episode}
-❖ ᴀᴜᴅɪᴏ: {audio}
-❖ Qᴜᴀʟɪᴛʏ: {quality}
-━━━━━━━━━━━━━━━━━━━⭒
-<blockquote>POWERED BY: [@KENSHIN_ANIME & @MANWHA_VERSE]</blockquote></b>"""
+def extract_episode(text):
+    if not text: return 0
+    match = re.search(r'ep(?:isode)?\s?(\d+)', text, re.I)
+    return int(match.group(1)) if match else 0
 
-# ================== UTIL FUNCTIONS ==================
+def extract_quality(text):
+    if not text: return "0"
+    match = re.search(r'(480p|720p|1080p|2160p|4k)', text, re.I)
+    return match.group(1) if match else "0"
 
-def extract_data(text: str):
-    data = {
-        "anime_name": "Unknown",
-        "season": "Unknown",
-        "episode": 0,
-        "audio": "Unknown",
-        "quality": 0
+def sort_key(msg):
+    ep = extract_episode(msg.caption or "")
+    quality = extract_quality(msg.caption or "")
+    quality_order = {"480p":1,"720p":2,"1080p":3,"2160p":4,"4k":4}
+    return (ep, quality_order.get(quality, 0))
+
+# ================= ANILIST FETCH =================
+
+async def fetch_anime_data(title):
+    query = """
+    query ($search: String) {
+      Media (search: $search, type: ANIME) {
+        title { romaji english }
+        genres
+        description(asHtml: false)
+        coverImage { large }
+        episodes
+        status
+      }
+    }
+    """
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://graphql.anilist.co",
+            json={"query": query, "variables": {"search": title}},
+        ) as resp:
+            data = await resp.json()
+
+    media = data["data"]["Media"]
+
+    return {
+        "title": media["title"]["english"] or media["title"]["romaji"],
+        "genres": ", ".join(media["genres"]),
+        "synopsis": re.sub('<.*?>', '', media["description"] or ""),
+        "poster": media["coverImage"]["large"],
+        "episodes": str(media["episodes"] or "Ongoing"),
+        "status": media["status"]
     }
 
-    if not text:
-        return data
+# ================= COMMANDS =================
 
-    name = re.search(r"[Aaᴀ][Nnɴ][Iiɪ][Mmᴍ][Eeᴇ]\s*:\s*(.+)", text)
-    if name:
-        data["anime_name"] = name.group(1).strip()
+@bot.on_message(filters.private & filters.incoming)
+async def user_tracker(_, msg: Message):
+    if msg.from_user:
+        users_db.add(msg.from_user.id)
 
-    season = re.search(r"[Ss]eason\s*:?\.?\s*(\d+)", text)
-    if season:
-        data["season"] = season.group(1)
+@bot.on_message(filters.command("setcaption") & filters.user(ADMIN_IDS))
+async def set_caption(_, msg):
+    global caption_template
+    caption_template = msg.text.split(None,1)[1]
+    await msg.reply("✅ Video Caption Template Saved")
 
-    ep = re.search(r"[Ee]pisode\s*:?\.?\s*(\d+)", text)
-    if ep:
-        data["episode"] = int(ep.group(1))
+@bot.on_message(filters.command("anime_dl_caption") & filters.user(ADMIN_IDS))
+async def set_anime_template(_, msg):
+    global anime_details_template
+    anime_details_template = msg.text.split(None,1)[1]
+    await msg.reply("✅ Anime Details Template Saved")
 
-    ql = re.search(r"(\d{3,4})p", text)
-    if ql:
-        data["quality"] = int(ql.group(1))
+@bot.on_message(filters.command("edit_all") & filters.user(ADMIN_IDS))
+async def edit_mode(_, msg):
+    global edit_all_mode
+    mode = msg.text.split()[-1].lower()
+    edit_all_mode = True if mode == "yes" else False
+    await msg.reply(f"Mode Updated: {mode}")
 
-    audio = re.search(r"[Aa]udio\s*:\s*(.+)", text)
-    if audio:
-        data["audio"] = audio.group(1).strip()
+@bot.on_message(filters.command("users") & filters.user(ADMIN_IDS))
+async def total_users(_, msg):
+    await msg.reply(f"👥 Total Users: {len(users_db)}")
 
-    return data
-
-def format_caption(template: str, data: dict):
-    for key, value in data.items():
-        template = template.replace(f"{{{key}}}", str(value))
-    return template
-
-def quality_order(q):
-    order = [480, 720, 1080, 2160]
-    return order.index(q) if q in order else 999
-
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
-
-# ================== START ==================
-
-@app.on_message(filters.command("start"))
-async def start(client, message):
-    user_id = message.from_user.id
-    users_db.add(user_id)
-
-    if user_id not in user_templates:
-        user_templates[user_id] = DEFAULT_CAPTION
-
-    text = f"""🔥 Advance Caption Bot.
-
-Hi {message.from_user.mention},
-Welcome to our bot. This bot is specially maked for anime uploaders and here you can rename any videos with your own caption in seconds.
-
-My Owner : @Kenshin_anime_owner
-For any help : @KENSHIN_ANIME_CHAT"""
-
-    await message.reply_text(text, parse_mode=ParseMode.HTML)
-
-# ================== HELP ==================
-
-@app.on_message(filters.command("help"))
-async def help_cmd(client, message):
-    help_text = """
-<b>🔥 COMPLETE BOT GUIDE</b>
-
-📌 How It Works:
-• Send multiple videos.
-• Bot waits 2 seconds.
-• Automatically sorts:
-Episode → 480p → 720p → 1080p → 2160p
-
-📌 Commands:
-/setcaption - Set your custom caption
-/edit_all yes - Rename + resend all messages
-/edit_all no - Rename only videos
-/users - Total users (Admin)
-/broadcast - Send message to all users (Admin)
-
-📌 Placeholders:
-{anime_name}
-{season}
-{episode}
-{audio}
-{quality}
-
-📌 Extra Features:
-• Original messages auto deleted
-• Renamed videos auto stored in log group
-• Smart quality sorting
-• HTML formatting supported
-"""
-
-    await message.reply_text(help_text, parse_mode=ParseMode.HTML)
-
-# ================== ADMIN COMMANDS ==================
-
-@app.on_message(filters.command("users"))
-async def users_cmd(client, message):
-    if not is_admin(message.from_user.id):
-        return
-    await message.reply_text(f"👥 Total Users: {len(users_db)}")
-
-@app.on_message(filters.command("broadcast"))
-async def broadcast(client, message):
-    if not is_admin(message.from_user.id):
-        return
-
-    if len(message.command) < 2:
-        return await message.reply_text("Usage: /broadcast your message")
-
-    text = message.text.split(" ", 1)[1]
-    count = 0
-
+@bot.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
+async def broadcast(_, msg):
+    text = msg.text.split(None,1)[1]
     for user in users_db:
         try:
-            await app.send_message(user, text)
-            count += 1
-        except:
-            pass
-
-    await message.reply_text(f"✅ Broadcast Sent to {count} users")
-
-# ================== SET CAPTION ==================
-
-@app.on_message(filters.command("setcaption"))
-async def set_caption(client, message):
-    if len(message.command) < 2:
-        return
-
-    template = message.text.split(" ", 1)[1]
-    user_templates[message.from_user.id] = template
-    await message.reply_text("✅ Caption Updated!")
-
-# ================== EDIT ALL ==================
-
-@app.on_message(filters.command("edit_all"))
-async def edit_all_cmd(client, message):
-    if len(message.command) < 2:
-        return
-
-    choice = message.command[1].lower()
-    if choice not in ["yes", "no"]:
-        return
-
-    user_edit_all_mode[message.from_user.id] = choice
-    await message.reply_text(f"Mode set to: {choice}")
-
-# ================== COLLECT ==================
-
-@app.on_message(filters.all & ~filters.command(["start","help","setcaption","edit_all","users","broadcast"]))
-async def collect(client, message: Message):
-    user_id = message.from_user.id
-
-    if user_id not in user_media_buffer:
-        user_media_buffer[user_id] = []
-
-    user_media_buffer[user_id].append(message)
-
-    if user_id in user_delay_task:
-        user_delay_task[user_id].cancel()
-
-    user_delay_task[user_id] = asyncio.create_task(process_after_delay(user_id))
-
-# ================== PROCESS ==================
-
-async def process_after_delay(user_id):
-    await asyncio.sleep(2)
-
-    messages = user_media_buffer.get(user_id, [])
-    if not messages:
-        return
-
-    edit_all = user_edit_all_mode.get(user_id, "no")
-    media_list = []
-
-    for msg in messages:
-        if msg.video:
-            data = extract_data(msg.caption or "")
-            media_list.append((data["episode"], quality_order(data["quality"]), msg))
-        elif edit_all == "yes":
-            media_list.append((9999, 9999, msg))
-
-    media_list.sort(key=lambda x: (x[0], x[1]))
-
-    for _, _, msg in media_list:
-        try:
-            if msg.video:
-                data = extract_data(msg.caption or "")
-                template = user_templates.get(user_id, DEFAULT_CAPTION)
-                new_caption = format_caption(template, data)
-
-                sent = await app.copy_message(
-                    chat_id=msg.chat.id,
-                    from_chat_id=msg.chat.id,
-                    message_id=msg.id,
-                    caption=new_caption,
-                    parse_mode=ParseMode.HTML
-                )
-
-                await sent.copy(LOG_GROUP_ID)
-
-            elif edit_all == "yes":
-                await app.copy_message(
-                    chat_id=msg.chat.id,
-                    from_chat_id=msg.chat.id,
-                    message_id=msg.id
-                )
-
-            await msg.delete()
+            await bot.send_message(user, text)
             await asyncio.sleep(0.3)
+        except:
+            continue
+    await msg.reply("Broadcast Completed")
 
-        except Exception as e:
-            print("Error:", e)
+# ================= HUGE UPLOAD =================
 
-    user_media_buffer[user_id] = []
+@bot.on_message(filters.command("huge_upload") & filters.user(ADMIN_IDS))
+async def huge_upload(_, msg: Message):
 
-print("🔥 Production Secure Bot Running")
-app.run()
+    await msg.reply("Send Source Chat Username or ID")
+    source = (await bot.listen(msg.chat.id)).text.strip()
+
+    await msg.reply("Send First Message ID")
+    first_id = int((await bot.listen(msg.chat.id)).text)
+
+    await msg.reply("Send Last Message ID")
+    last_id = int((await bot.listen(msg.chat.id)).text)
+
+    await msg.reply("Send Target Channel Username or ID")
+    target = (await bot.listen(msg.chat.id)).text.strip()
+
+    await msg.reply("Send Anime Name For Metadata")
+    anime_name = (await bot.listen(msg.chat.id)).text.strip()
+
+    await msg.reply("🚀 Starting Empire Upload...")
+
+    anime_data = await fetch_anime_data(anime_name)
+
+    # Upload poster + details
+    if anime_details_template:
+        details_caption = anime_details_template.format(
+            anime=anime_data["title"],
+            season="1",
+            episodes=anime_data["episodes"],
+            audio="Hindi",
+            quality="480p • 720p • 1080p",
+            genre=anime_data["genres"],
+            synopsis=anime_data["synopsis"]
+        )
+
+        await bot.send_photo(
+            target,
+            anime_data["poster"],
+            caption=details_caption
+        )
+
+    # Stickers
+    sticker_pack = await bot.get_sticker_set("AnimeNetworkIndia")
+    start_sticker = sticker_pack.stickers[0].file_id
+    black_sticker = sticker_pack.stickers[1].file_id
+    end_sticker = sticker_pack.stickers[2].file_id
+
+    await bot.send_sticker(target, start_sticker)
+
+    copied = []
+
+    for i in range(first_id, last_id+1):
+        try:
+            m = await bot.copy_message(STORE_GROUP_ID, source, i)
+            if m.video:
+                copied.append(m)
+            await asyncio.sleep(1)
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+        except:
+            continue
+
+    copied.sort(key=sort_key)
+
+    current_ep = None
+
+    for m in copied:
+        ep = extract_episode(m.caption or "")
+        if current_ep and ep != current_ep:
+            await bot.send_sticker(target, black_sticker)
+        current_ep = ep
+
+        if edit_all_mode:
+            await bot.copy_message(target, STORE_GROUP_ID, m.id)
+        else:
+            await bot.copy_message(target, STORE_GROUP_ID, m.id, caption=m.caption)
+
+        await bot.delete_messages(STORE_GROUP_ID, m.id)
+        await asyncio.sleep(1)
+
+    await bot.send_sticker(target, end_sticker)
+
+    await msg.reply("✅ Empire Upload Completed")
+
+# ================= START & HELP =================
+
+@bot.on_message(filters.command("start"))
+async def start(_, msg):
+    await msg.reply(f"""🔥 Advance Caption Empire Bot
+
+Hi {msg.from_user.mention}
+
+100+ Channel Automation Ready 🚀
+Use /help to see all commands.""")
+
+@bot.on_message(filters.command("help"))
+async def help_cmd(_, msg):
+    await msg.reply("""
+📌 ADMIN COMMANDS
+
+/setcaption - Set video caption template
+/anime_dl_caption - Set anime details template
+/edit_all yes/no - Send full message or only video
+/huge_upload - Massive range upload
+/broadcast - Broadcast to all users
+/users - Total user count
+""")
+
+# ================= RUN =================
+
+async def main():
+    await bot.start()
+    print("🔥 TELEGRAM EMPIRE SYSTEM RUNNING")
+    await idle()
+
+if __name__ == "__main__":
+    asyncio.run(main())
