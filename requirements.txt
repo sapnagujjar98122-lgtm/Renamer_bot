@@ -1,4 +1,3 @@
-pyrofork==2.3.45
+git+https://github.com/pyrogram/pyrofork.git
 tgcrypto
 aiohttp
-python-dotenv
