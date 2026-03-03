@@ -43,41 +43,51 @@ DEFAULT_CAPTION = """<b>📺 ᴀɴɪᴍᴇ : {anime_name}
 <blockquote>POWERED BY: [@KENSHIN_ANIME & @MANWHA_VERSE]</blockquote></b>"""
 
 # ================== UTIL FUNCTIONS ==================
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
-
-def extract_data(text):
+def extract_data(text: str):
     data = {
         "anime_name": "Unknown",
-        "season": "1",
+        "season": "Unknown",
         "episode": 0,
         "audio": "Unknown",
-        "quality": 480,
-        "synopsis": "N/A"
+        "quality": 0
     }
-    if not text: return data
-    name = re.search(r"Anime\s*:\s*(.+)", text, re.I)
-    if name: data["anime_name"]=name.group(1)
-    season = re.search(r"Season\s*(\d+)", text, re.I)
-    if season: data["season"]=season.group(1)
-    ep = re.search(r"Episode\s*(\d+)", text, re.I)
-    if ep: data["episode"]=int(ep.group(1))
+
+    if not text:
+        return data
+
+    name = re.search(r"[Aaᴀ][Nnɴ][Iiɪ][Mmᴍ][Eeᴇ]\s*:\s*(.+)", text)
+    if name:
+        data["anime_name"] = name.group(1).strip()
+
+    season = re.search(r"[Ss]eason\s*:?\.?\s*(\d+)", text)
+    if season:
+        data["season"] = season.group(1)
+
+    ep = re.search(r"[Ee]pisode\s*:?\.?\s*(\d+)", text)
+    if ep:
+        data["episode"] = int(ep.group(1))
+
     ql = re.search(r"(\d{3,4})p", text)
-    if ql: data["quality"]=int(ql.group(1))
-    audio = re.search(r"Audio\s*:\s*(.+)", text, re.I)
-    if audio: data["audio"]=audio.group(1)
-    synopsis = re.search(r"Synopsis\s*:\s*(.+)", text, re.I)
-    if synopsis: data["synopsis"]=synopsis.group(1)
+    if ql:
+        data["quality"] = int(ql.group(1))
+
+    audio = re.search(r"[Aa]udio\s*:\s*(.+)", text)
+    if audio:
+        data["audio"] = audio.group(1).strip()
+
     return data
 
-def format_caption(template, data):
-    for k,v in data.items():
-        template = template.replace(f"{{{k}}}", str(v))
+def format_caption(template: str, data: dict):
+    for key, value in data.items():
+        template = template.replace(f"{{{key}}}", str(value))
     return template
 
 def quality_order(q):
-    order = [480,720,1080,2160]
+    order = [480, 720, 1080, 2160]
     return order.index(q) if q in order else 999
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
 
 # ================== START ==================
 @app.on_message(filters.command("start"))
